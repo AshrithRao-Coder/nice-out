@@ -24,6 +24,12 @@ No API key. No account. No tracking. Nothing to pay for, ever.
 
 ## Publishing the current version on Netlify
 
+For **Render**, create a Static Site with a blank Root Directory, build command
+`npm install && npm run build` and Publish Directory `dist`. Use `npm run build`,
+not `npm build`. The included `render.yaml` sets this up for Blueprint deployments.
+For an existing manually configured Render site, correct its Build Command in the dashboard;
+adding `render.yaml` alone does not overwrite that saved dashboard command.
+
 Run `npm run build` from this directory. The build copies the complete app to `dist/`,
 including the current What to take list, styles, service worker, manifest and icons.
 No dependencies need to be downloaded for this build.
