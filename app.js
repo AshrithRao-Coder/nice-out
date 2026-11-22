@@ -27,24 +27,74 @@ if (!Array.isArray(saved)) saved = [];
 saved = saved.filter(p => p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && typeof p.label === "string");
 const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let loadId = 0, searchId = 0;
+let locationId = 0;
+const validNumber = value => typeof value === "number" && Number.isFinite(value);
+const wetGroup = group => ["rain", "heavyRain", "drizzle", "thunder", "snow"].includes(group);
+const rainPercent = value => validNumber(value) ? `${Math.round(Math.max(0, Math.min(100, value)))}%` : "Unavailable";
+function rainContext(group, probability, amount) {
+  if (wetGroup(group) && (!validNumber(probability) || probability < 10)) {
+    return `${group === "snow" ? "Snow" : group === "drizzle" ? "Drizzle" : "Wet weather"} is forecast${validNumber(probability) ? ` despite the ${rainPercent(probability)} measurable-precipitation chance` : "; the probability is unavailable"}. The weather symbol and probability are separate forecasts; tiny amounts can still make it damp.`;
+  }
+  if (validNumber(amount) && amount > 0 && probability === 0) return "A small amount of precipitation is forecast despite the 0% probability. The forecast signals differ; 0% is not a guarantee of dry weather.";
+  return "";
+}
+function dayProbability(w, index) {
+  const daily = w.daily.precipitation_probability_max?.[index];
+  if (validNumber(daily)) return daily;
+  const values = w.hourly.time.flatMap((time, i) => time.startsWith(w.daily.time[index]) && validNumber(w.hourly.precipitation_probability?.[i]) ? [w.hourly.precipitation_probability[i]] : []);
+  return values.length ? Math.max(...values) : null;
+}
+function validateForecast(w) {
+  if (!w?.current || !validNumber(w.current.temperature_2m) || typeof w.current.time !== "string" || !w.daily?.time?.length || !w.hourly?.time?.length) throw new Error("The forecast is incomplete. Please try refreshing.");
+  for (const key of ["temperature_2m_min", "temperature_2m_max", "weather_code", "sunrise", "sunset", "daylight_duration", "wind_speed_10m_max", "uv_index_max"]) {
+    if (!Array.isArray(w.daily[key]) || w.daily[key].length !== w.daily.time.length) throw new Error("The daily forecast is incomplete. Please refresh.");
+  }
+  if (!Array.isArray(w.hourly.temperature_2m) || w.hourly.temperature_2m.length !== w.hourly.time.length) throw new Error("The hourly forecast is incomplete. Please refresh.");
+}
 
-function packingItems(g, rain, cold, uv, wind, hot) {
-  const wet = rain >= 45 || ["rain", "heavyRain", "drizzle", "thunder", "snow"].includes(g);
+function packingItems(g, rain, cold, uv, wind, hot, amount = 0) {
+  const wet = rain >= 45 || wetGroup(g) || amount > 0;
+  const wetReason = wetGroup(g) ? `${g === "drizzle" ? "Drizzle" : g === "snow" ? "Snow" : "Rain or showers"} forecast${validNumber(rain) && rain >= 10 ? ` · ${rainPercent(rain)} rain chance` : ""}.` : validNumber(rain) && rain >= 45 ? `${rainPercent(rain)} rain chance.` : "Some precipitation is forecast.";
   return [
-    { id: "umbrella", name: "Umbrella", needed: wet && wind < 38 && g !== "thunder" && g !== "snow", why: `${rain}% rain chance.`, skip: wet ? "Choose a hooded waterproof in these conditions." : "Rain looks unlikely." },
-    { id: "coat", name: "Coat", needed: cold <= 10, why: cold <= 2 ? "A warm winter coat for freezing conditions." : "A coat for the cooler hours.", skip: "Looks warm enough without a coat." },
-    { id: "sweater", name: "Sweater / jumper", needed: cold > 10 && cold <= 18, why: "A layer for the cooler hours.", skip: cold <= 10 ? "An optional extra layer under your coat." : "Mild enough without an extra layer." },
-    { id: "waterproof", name: "Hooded waterproof", needed: wet, why: wind >= 38 ? "Wind and rain make an umbrella impractical." : "Stay dry in rain or snow.", skip: "No wet weather expected." },
+    { id: "umbrella", name: "Umbrella", needed: wet && wind < 38 && g !== "thunder" && g !== "snow", why: wetReason, skip: wet ? "Choose a hooded waterproof in these conditions." : "Rain looks unlikely." },
+    { id: "coat", name: "Coat", needed: cold <= 10, why: `Feels as cool as ${r1(metric ? cold : cold * 1.8 + 32)}°${metric ? "C" : "F"}${cold <= 2 ? " — choose a warm coat" : " — take a coat"}.`, skip: "Looks warm enough without a coat." },
+    { id: "sweater", name: "Sweater / jumper", needed: cold > 10 && cold <= 18, why: `Feels as cool as ${r1(metric ? cold : cold * 1.8 + 32)}°${metric ? "C" : "F"}; a layer will help.`, skip: cold <= 10 ? "An optional extra layer under your coat." : "Mild enough without an extra layer." },
+    { id: "waterproof", name: "Hooded waterproof", needed: wet, why: wind >= 38 ? "Wind and wet weather make an umbrella impractical." : g === "thunder" ? "Thunderstorms forecast; plan indoor shelter rather than relying on an umbrella." : "Stay dry; an alternative to an umbrella in light rain.", skip: "No wet weather expected." },
     { id: "gloves", name: "Gloves", needed: cold <= 2 || g === "snow", why: "Keep your hands warm.", skip: "Not cold enough to need them." },
     { id: "sun", name: "Sun cream & sunglasses", needed: uv >= 3, why: `UV reaches ${r1(uv)} today.`, skip: "UV is low today." },
     { id: "water", name: "Water bottle", needed: hot >= 24, why: "Take water for the warmer hours.", skip: "Optional, especially for a longer walk." }
   ];
 }
 
-function packingHTML(items) {
+function packingHTML(items, heading = "WHAT TO TAKE", id = "take-heading", intro = "Suggested for today’s weather") {
   const needed = items.filter(item => item.needed);
   const row = item => `<li class="pack-row"><span class="pack-icon" aria-hidden="true">${({umbrella:"☂", coat:"🧥", sweater:"👕", waterproof:"🌧", gloves:"🧤", sun:"☀", water:"💧"})[item.id]}</span><span><strong>${item.name}</strong><small>${item.why}</small></span></li>`;
-  return `<section class="card packing" aria-labelledby="take-heading"><h2 id="take-heading">WHAT TO TAKE</h2><p class="pack-intro">Suggested for today’s weather</p>${needed.length ? `<ul class="pack-list">${needed.map(row).join("")}</ul>` : '<p class="line">Travel light — no weather extras suggested today.</p>'}<p class="pack-note">Based on today’s rain, wind, UV and coolest temperatures, including how it feels now.</p></section>`;
+  return `<section class="card packing" aria-labelledby="${id}"><h2 id="${id}">${heading}</h2><p class="pack-intro">${intro}</p>${needed.length ? `<ul class="pack-list">${needed.map(row).join("")}</ul>` : '<p class="line">Travel light — no weather extras suggested for this period.</p>'}<p class="pack-note">Based on feels-like temperature, precipitation, wind and UV. Bring extra layers for a longer outing.</p></section>`;
+}
+
+function periodItems(w, day, period = "day") {
+  const {daily:D, hourly:H, current:C} = w;
+  const today = D.time[day] === C.time.slice(0, 10);
+  const currentHour = C.time.slice(0, 13);
+  const indices = H.time.flatMap((time, i) => {
+    if (!time.startsWith(D.time[day])) return [];
+    if (today && time.slice(0, 13) < currentHour) return [];
+    if (!today && (time < D.sunrise[day] || time > D.sunset[day])) return [];
+    return [i];
+  });
+  const selected = period === "now" ? indices.slice(0,3) : period === "later" ? indices.slice(3) : indices;
+  if (!selected.length && period === "later") return null;
+  const values = (key, fallback) => {const list = selected.map(i => H[key]?.[i]).filter(validNumber); return list.length ? list : [fallback].filter(validNumber);};
+  const asC = value => metric ? value : (value-32)/1.8;
+  const apparent = values("apparent_temperature", D.apparent_temperature_min?.[day] ?? D.temperature_2m_min[day]);
+  if (today && period !== "later" && validNumber(C.apparent_temperature)) apparent.push(C.apparent_temperature);
+  const groups = selected.map(i => code(H.weather_code?.[i])[2]);
+  if (today && period !== "later") groups.unshift(code(C.weather_code)[2]);
+  if (!selected.length) groups.push(code(D.weather_code[day])[2]);
+  const group = ["thunder","snow","heavyRain","rain","drizzle"].find(g => groups.includes(g)) || groups[0] || "cloud";
+  const probabilities = values("precipitation_probability", dayProbability(w,day));
+  const amount = selected.length ? values("precipitation", 0).reduce((a,b)=>a+b,0) : D.precipitation_sum?.[day] || 0;
+  return packingItems(group, probabilities.length ? Math.max(...probabilities) : null, asC(Math.min(...apparent)), Math.max(...values("uv_index",D.uv_index_max[day])), Math.max(...values("wind_speed_10m",D.wind_speed_10m_max[day]))*(metric?1:1.609344), asC(Math.max(...values("temperature_2m",D.temperature_2m_max[day]))), amount);
 }
 
 /* ---------------- weather codes ---------------- */
@@ -131,12 +181,13 @@ function bestWindow(H, from, sunset) {
   for (let i = from; i < Math.min(from + 24, H.time.length - 1); i++) {
     const t = new Date(H.time[i]);
     if (new Date(H.time[i + 1]).getTime() + 3600000 > sunset) break;
-    const rain = (H.precipitation_probability[i] + H.precipitation_probability[i + 1]) / 2;
+    const rain = ((H.precipitation_probability?.[i] ?? 50) + (H.precipitation_probability?.[i + 1] ?? 50)) / 2;
     const rawTemp = (H.temperature_2m[i] + H.temperature_2m[i + 1]) / 2;
     const temp = metric ? rawTemp : (rawTemp - 32) / 1.8;
     const wind = H.wind_speed_10m[i] * (metric ? 1 : 1.609344);
     const target = 18;
-    const score = 100 - rain * 1.6 - Math.abs(temp - target) * 1.8 - wind * 0.35;
+    const wetPenalty = [i,i+1].some(index => wetGroup(code(H.weather_code?.[index])[2]) || (H.precipitation?.[index] ?? 0)>0) ? 35 : 0;
+    const score = 100 - rain * 1.6 - Math.abs(temp - target) * 1.8 - wind * 0.35 - wetPenalty;
     if (!best || score > best.score) best = { score, i, t };
   }
   return best;
@@ -145,6 +196,7 @@ function bestWindow(H, from, sunset) {
 /* ---------------- the fetch ---------------- */
 async function load(p, opts = {}) {
   const requestId = ++loadId;
+  ++locationId;
   const requestedMetric = metric;
   place = p;
   $("place").textContent = p.label;
@@ -158,9 +210,9 @@ async function load(p, opts = {}) {
     + `?latitude=${p.lat}&longitude=${p.lon}`
     + "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,"
     + "wind_speed_10m,wind_direction_10m,is_day,surface_pressure,cloud_cover"
-    + "&hourly=temperature_2m,precipitation_probability,weather_code,wind_speed_10m"
+    + "&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,uv_index"
     + "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,"
-    + "precipitation_sum,sunrise,sunset,uv_index_max,wind_speed_10m_max,daylight_duration"
+    + "precipitation_sum,apparent_temperature_min,sunrise,sunset,uv_index_max,wind_speed_10m_max,daylight_duration"
     + "&past_days=1&forecast_days=8&timezone=auto" + u;
 
   const aUrl = "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -176,6 +228,7 @@ async function load(p, opts = {}) {
 
     const w = await fRes.json();
     if (requestId !== loadId || requestedMetric !== metric) return;
+    validateForecast(w);
 
     store.set("cache", JSON.stringify({ w, air, p, at: Date.now(), metric }));
     $("offline-note").hidden = true;
@@ -188,10 +241,11 @@ async function load(p, opts = {}) {
       try {
         const c = JSON.parse(cached);
         if (c.metric !== metric || c.p.lat !== p.lat || c.p.lon !== p.lon) throw new Error("Cached forecast does not match this place and unit.");
-        const mins = Math.round((Date.now() - c.at) / 60000);
+        validateForecast(c.w);
+        const mins = Math.max(0, Math.round((Date.now() - c.at) / 60000));
         $("offline-note").hidden = false;
-        $("offline-note").textContent = `Offline — showing what we had ${
-          mins < 60 ? mins + " min" : Math.round(mins / 60) + " hr"} ago.`;
+        $("offline-note").textContent = `Couldn't refresh — saved forecast from ${
+          mins < 60 ? mins + " min" : Math.round(mins / 60) + " hr"} ago${mins >= 180 ? "; this forecast is stale and conditions may have changed" : ""}.`;
         render(c.w, c.air);
         return;
       } catch (_) { /* fall through to error */ }
@@ -204,11 +258,9 @@ function showError(e) {
   const blocked = e instanceof TypeError;
   $("app").innerHTML = `<div class="err">
     <b>Couldn't get the weather</b>
-    ${blocked
-      ? "The connection was blocked before it left this device. If you're online, the window running this app isn't allowed to reach the internet — try opening it as a normal page or installing it."
-      : "The weather service answered, but with a complaint."}
+    ${blocked ? "Check your connection and try again. You can also choose another town." : "The weather service is unavailable or returned an incomplete forecast. Please try again."}
     <div class="why">${escapeHTML(e.name)}: ${escapeHTML(e.message)}</div>
-    <button onclick="location.reload()">Try again</button>
+    <button onclick="if (place) load(place); else gps()">Try again</button>
   </div>`;
 }
 
@@ -218,8 +270,12 @@ function render(w, air) {
   const T = metric ? "°C" : "°F";
   const S = metric ? "km/h" : "mph";
 
-  // past_days=1 means index 0 is YESTERDAY. Today is 1.
-  const Y = 0, TODAY = 1;
+  // Locate the selected place's calendar day instead of assuming a fixed index.
+  const found = D.time.indexOf(C.time.slice(0,10));
+  const TODAY = found >= 0 ? found : 0, Y = Math.max(0,TODAY-1);
+  const todayProbability = dayProbability(w,TODAY);
+  const todayRainNote = rainContext(code(D.weather_code[TODAY])[2],todayProbability,D.precipitation_sum?.[TODAY]);
+  const laterItems = periodItems(w,TODAY,"later");
 
   const [condName, condEmoji, g] = code(C.weather_code);
   const isDay = C.is_day === 1;
@@ -245,16 +301,19 @@ function render(w, air) {
   if (nowIdx < 0) nowIdx = 0;
 
   /* ---- when does rain start ---- */
-  let rainLine = "No rain expected in the next 12 hours.";
+  let rainLine = "No wet weather indicated in the next 12 hours. Forecasts can change.";
+  let hasRainProbability = false;
   for (let i = nowIdx; i < Math.min(nowIdx + 13, H.time.length); i++) {
-    if (H.precipitation_probability[i] >= 55) {
+    if (validNumber(H.precipitation_probability?.[i])) hasRainProbability = true;
+    if ((H.precipitation_probability?.[i] ?? 0) >= 45 || wetGroup(code(H.weather_code?.[i])[2]) || (H.precipitation?.[i] ?? 0) > 0 || (i === nowIdx && wetGroup(g))) {
       const t = new Date(H.time[i]);
       rainLine = i <= nowIdx + 1
-        ? "Rain right about now. Sorry."
-        : `Dry until roughly <b>${t.getHours()}:00</b>. That's your window.`;
+        ? `${g === "snow" ? "Snow" : g === "drizzle" ? "Drizzle" : "Wet weather"} is indicated around now. Take something to keep dry.`
+        : `Wet weather is possible around <b>${t.getHours()}:00</b>. Take a waterproof if you'll still be out.`;
       break;
     }
   }
+  if (!hasRainProbability && rainLine.startsWith("No wet")) rainLine = "Rain probabilities are unavailable. Check the hourly conditions before heading out.";
 
   /* ---- best window ---- */
   const sunset = new Date(D.sunset[TODAY]);
@@ -283,12 +342,12 @@ function render(w, air) {
   const temps = slice.map(i => H.temperature_2m[i]);
   const lo = Math.min(...temps), hi = Math.max(...temps);
   const span = Math.max(1, hi - lo);
-  const x = k => (k / (slice.length - 1)) * (W - 24) + 12;
+  const x = k => (k / Math.max(1,slice.length - 1)) * (W - 24) + 12;
   const y = t => padT + (1 - (t - lo) / span) * (Ht - padT - padB);
 
   const line = slice.map((idx, k) => `${x(k)},${y(H.temperature_2m[idx])}`).join(" ");
   const bars = slice.map((idx, k) => {
-    const p = H.precipitation_probability[idx];
+    const p = H.precipitation_probability?.[idx];
     if (!p) return "";
     const h = (p / 100) * 22;
     return `<rect x="${x(k) - 4}" y="${Ht - padB + 6 - h}" width="8" height="${h}" fill="var(--aqua)" opacity="0.55"/>`;
@@ -335,7 +394,9 @@ function render(w, air) {
     const midC = metric ? mid : (mid - 32) / 1.8;
     const dwind = metric ? D.wind_speed_10m_max[i] : D.wind_speed_10m_max[i] * 1.609;
     const dj = pickJoke(listFor(dg, midC, dwind, true), D.time[i]);
-    const rp = D.precipitation_probability_max[i];
+    const rp = dayProbability(w,i);
+    const rainNote = rainContext(dg,rp,D.precipitation_sum?.[i]);
+    const items = periodItems(w,i).filter(item=>item.needed);
     const left = ((D.temperature_2m_min[i] - wkLo) / Math.max(1, wkHi - wkLo)) * 100;
     const wide = ((D.temperature_2m_max[i] - D.temperature_2m_min[i]) / Math.max(1, wkHi - wkLo)) * 100;
     const dtone = TONE[dg] || TONE.cloud;
@@ -344,15 +405,17 @@ function render(w, air) {
         <span class="day-swatch" style="background:${dtone[0]}"></span>
         <span class="day-name">${i === TODAY ? "Today" : names[dt.getDay()]}</span>
         <span class="day-em">${de}</span>
-        <span class="day-rain" aria-label="Chance of rain: ${rp == null ? "unavailable" : rp + "%"}">${rp == null ? "—" : rp + "%"}</span>
+        <span class="day-rain" aria-label="Chance of measurable precipitation: ${rainPercent(rp)}">${rainPercent(rp)}</span>
         <span class="day-bar"><i style="left:${left}%;width:${Math.max(6, wide)}%"></i></span>
         <span class="day-t">${r1(D.temperature_2m_max[i])}° <i>${r1(D.temperature_2m_min[i])}°</i></span>
       </div>
       <div class="day-quip">${dj}</div>
+      ${rainNote ? `<div class="day-rain-note">${rainNote}</div>` : ""}
       <div class="day-more" hidden>
         ${dn} · wind to ${r1(D.wind_speed_10m_max[i])} ${S} · UV ${r1(D.uv_index_max[i])}
-        · rain ${(D.precipitation_sum[i] ?? 0).toFixed(1)} mm
+        · precipitation ${validNumber(D.precipitation_sum?.[i]) ? D.precipitation_sum[i].toFixed(1) + " mm" : "unavailable"}
         · light ${hh(new Date(D.sunrise[i]))}–${hh(new Date(D.sunset[i]))}
+        <span class="day-items"><strong>Suggested ${i === TODAY ? "for the rest of today" : "for daytime"}:</strong> ${items.length ? items.map(item=>`${item.name} — ${item.why}`).join(" · ") : "No weather extras suggested."}</span>
       </div>
     </button>`;
   }
@@ -374,11 +437,13 @@ function render(w, air) {
       <p class="quip">${quip}</p>
     </div></section>
 
-    ${packingHTML(packingItems(g, D.precipitation_probability_max[TODAY], Math.min(metric ? D.temperature_2m_min[TODAY] : (D.temperature_2m_min[TODAY] - 32) / 1.8, metric ? C.apparent_temperature : (C.apparent_temperature - 32) / 1.8), D.uv_index_max[TODAY], Math.max(windKmh, D.wind_speed_10m_max[TODAY] * (metric ? 1 : 1.609344)), metric ? D.temperature_2m_max[TODAY] : (D.temperature_2m_max[TODAY] - 32) / 1.8), D.time[TODAY])}
+    ${packingHTML(periodItems(w,TODAY,"now"),"WHAT TO TAKE NOW","take-heading","Suggested for the next 3 hours, including how it feels now")}
+    ${laterItems ? packingHTML(laterItems,"LATER TODAY","later-heading","For the remaining hours after that — check before a longer outing") : ""}
 
     <div class="card">
       <h2>TODAY</h2>
       <div class="line">${rainLine}</div>
+      ${todayRainNote ? `<p class="rain-context">${todayRainNote}</p>` : ""}
       <div class="line" style="margin-top:7px">${bestLine}</div>
       <div class="line" style="margin-top:7px">${vsY}</div>
     </div>
@@ -397,7 +462,7 @@ function render(w, air) {
     <div class="tiles">
       <div class="tile"><div class="tile-k">WIND</div><div class="tile-v">${r1(C.wind_speed_10m)} <small>${S} ${dir}</small></div></div>
       <div class="tile"><div class="tile-k">HUMIDITY</div><div class="tile-v">${C.relative_humidity_2m}<small>%</small></div></div>
-      <div class="tile"><div class="tile-k">RAIN ODDS</div><div class="tile-v">${D.precipitation_probability_max[TODAY]}<small>%</small></div></div>
+      <div class="tile"><div class="tile-k">TODAY'S RAIN CHANCE</div><div class="tile-v">${rainPercent(todayProbability)}</div></div>
       <div class="tile"><div class="tile-k">UV INDEX</div><div class="tile-v">${r1(D.uv_index_max[TODAY])}</div></div>
       <div class="tile"><div class="tile-k">CLOUD</div><div class="tile-v">${C.cloud_cover}<small>%</small></div></div>
       <div class="tile"><div class="tile-k">PRESSURE</div><div class="tile-v">${r1(C.surface_pressure)} <small>hPa</small></div></div>
@@ -418,6 +483,7 @@ function render(w, air) {
 
     <div class="card flush">
       <h2 class="pad">THE WEEK</h2>
+      <p class="pad rain-explainer">Percentages are the highest hourly chance of more than 0.1 mm of precipitation. Light drizzle can still be forecast at 0%. Tap a day for details and suggested items.</p>
       ${week}
     </div>
 
@@ -447,15 +513,18 @@ async function nameOf(lat, lon) {
 }
 
 function gps() {
+  const requestId = ++locationId;
   $("place").textContent = "Finding you";
   $("drawer").hidden = true;
   if (!navigator.geolocation) return noGps("This browser won't share a location.");
   navigator.geolocation.getCurrentPosition(
     async pos => {
       const { latitude: lat, longitude: lon } = pos.coords;
-      load({ lat: +lat.toFixed(3), lon: +lon.toFixed(3), label: await nameOf(lat, lon) });
+      const label = await nameOf(lat,lon);
+      if (requestId !== locationId) return;
+      load({ lat: +lat.toFixed(3), lon: +lon.toFixed(3), label });
     },
-    err => noGps("Location unavailable (" + err.message + ")."),
+    err => {if (requestId === locationId) noGps("Location unavailable (" + err.message + ").");},
     { timeout: 10000, maximumAge: 300000, enableHighAccuracy: false }
   );
 }
@@ -479,7 +548,7 @@ async function search(q) {
 
   $("hits").innerHTML = '<div class="note">Searching…</div>';
   try {
-    const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`);
+    const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q.trim())}&count=6&language=en&format=json`, {signal:AbortSignal.timeout(10000)});
     if (!r.ok) throw new Error("search service returned " + r.status);
     const hits = (await r.json()).results || [];
     if (requestId !== searchId) return;

@@ -221,3 +221,11 @@ h2 {
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
 @media (prefers-reduced-motion: reduce) { .fade, .boot-dot { animation: none; } }
 :focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.rain-context,.day-rain-note,.rain-explainer { color:var(--soft); font-size:14px; line-height:1.6; margin-top:12px; }
+.day-rain-note { padding-left:15px; border-left:2px solid var(--gold); margin-left:15px; padding-right:8px; }
+.rain-explainer { margin-top:0; margin-bottom:15px; }
+.day-items { display:block; margin-top:10px; color:var(--soft); font-size:14px; }
+.day-more { font-size:14px; }
+.pack-row small { font-size:14px; line-height:1.5; }
+.day-rain { min-width:34px; width:auto; max-width:84px; overflow-wrap:anywhere; }
+@media(max-width:380px) { .day-bar { min-width:20px; } .day-top { gap:7px; } }

@@ -4,7 +4,7 @@
    app remembers the last forecast it saw.
 
    npm run build updates VERSION automatically when app files change. */
-const VERSION = "nice-out-fc6c314d0101a007";
+const VERSION = "nice-out-1bb248710cf4b542";
 
 const FILES = [
   "./",
